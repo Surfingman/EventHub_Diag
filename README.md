@@ -94,6 +94,9 @@ python eh_diagnose.py --resource-id <rid> --azure-auth --format json --exit-code
 
 `--region`을 생략하면 `--azure-auth`로 조회한 namespace `location`에서 자동 유도합니다.
 
+> [!NOTE]
+> `--event-hub`를 생략하면 namespace의 **모든 Event Hub를 개별로** 진단하고, `--checkpoint-store` 지정 시 checkpoint store에 존재하는 **모든 consumer group을 자동 스캔**합니다. `--event-hub`·`--consumer-group`은 결과를 좁히는 **선택적 필터**입니다.
+
 ---
 
 ## 🧰 진단 규칙 (Diagnostic Rules)
@@ -116,7 +119,7 @@ python eh_diagnose.py --resource-id <rid> --azure-auth --format json --exit-code
 | `capture_backlog` | `CaptureBacklog` | Average | > 1 | > 1000 | Capture 적체. 대상 Storage 권한/처리량 확인 |
 
 > [!TIP]
-> 위 규칙은 Azure Monitor Metrics 기반으로 평가됩니다.
+> 위 규칙은 Azure Monitor Metrics 기반으로 평가됩니다. metric은 `EntityName` dimension으로 **Event Hub별로 분해**되어 hub마다 개별 finding이 생성됩니다.
 
 ### 파생 규칙 (`DERIVED_DEFAULTS`)
 
@@ -124,7 +127,7 @@ python eh_diagnose.py --resource-id <rid> --azure-auth --format json --exit-code
 
 | Category | Signal | Warning | Critical | 계산식 / 비고 |
 |----------|--------|---------|----------|---------------|
-| `backlog` | Egress / Ingress 비율 | < 0.90 | < 0.50 | `OutgoingMessages / IncomingMessages` (window total) |
+| `backlog` | Egress / Ingress 비율 | < 0.90 | < 0.50 | Event Hub별 `OutgoingMessages / IncomingMessages` (window total). **consumer group 수로 fan-out 정규화**(`per_group_ratio = ratio / group수`). egress는 group 단위로 분리 불가하므로 group별 지연은 `consumer_lag`가 결정적 |
 | `partition_skew` | retained-events 편중 | ≥ 2.0× | ≥ 5.0× | 파티션별 `max / mean` retained events |
 | `connections` | 연결 포화도 | ≥ 80% | ≥ 95% | `ActiveConnections(max) / --max-connections` |
 | `consumer_lag` | 최악 파티션 lag | ≥ `--lag-warn` | ≥ `--lag-crit` | `last_enqueued_seq − checkpoint_seq` |
@@ -184,6 +187,8 @@ lag = last_enqueued_sequence_number (데이터 평면)
 
 `{fqdn}/{eventhub}/{consumer_group}/checkpoint/{partition_id}`  *(SDK가 소문자화)*
 
+checkpoint store를 훑어 이 경로에 존재하는 **모든 (Event Hub × consumer group)** 조합을 자동으로 찾아 각각의 lag을 계산합니다. `--consumer-group`으로 특정 그룹만 필터링할 수 있습니다.
+
 > [!TIP]
 > metric이 사라지는 **dead/idle consumer** 상황도 잡아냅니다.
 
@@ -216,9 +221,10 @@ lag = last_enqueued_sequence_number (데이터 평면)
     {
       "category": "throttling",
       "severity": "critical",
-      "title": "Requests throttled (capacity pressure)",
-      "detail": "ThrottledRequests (total)=1500 over window. Enable Auto-Inflate or increase throughput capacity.",
+      "title": "Requests throttled (capacity pressure) — orders",
+      "detail": "[orders] ThrottledRequests (total)=1500 over window. Enable Auto-Inflate or increase throughput capacity.",
       "evidence": {
+        "event_hub": "orders",
         "metric": "ThrottledRequests",
         "value": 1500,
         "warn": 1,
