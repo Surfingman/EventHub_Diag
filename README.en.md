@@ -94,6 +94,9 @@ python eh_diagnose.py --resource-id <rid> --azure-auth --format json --exit-code
 
 If `--region` is omitted, it is derived automatically from the namespace `location` retrieved via `--azure-auth`.
 
+> [!NOTE]
+> If `--event-hub` is omitted, **every event hub** in the namespace is diagnosed individually, and when `--checkpoint-store` is set, **every consumer group** present in the checkpoint store is auto-scanned. `--event-hub` / `--consumer-group` act as **optional filters** to narrow the results.
+
 ---
 
 ## 🧰 Diagnostic Rules
@@ -116,7 +119,7 @@ You can easily change the diagnostic policy by adjusting only the thresholds to 
 | `capture_backlog` | `CaptureBacklog` | Average | > 1 | > 1000 | Capture backlog. Verify target Storage permissions and throughput. |
 
 > [!TIP]
-> The rules above are evaluated based on Azure Monitor Metrics.
+> The rules above are evaluated based on Azure Monitor Metrics. Metrics are **split per event hub** via the `EntityName` dimension, producing an individual finding per hub.
 
 ### Derived Rules (`DERIVED_DEFAULTS`)
 
@@ -124,7 +127,7 @@ Rules computed by combining runtime data and metrics.
 
 | Category | Signal | Warning | Critical | Formula / Notes |
 |----------|--------|---------|----------|-----------------|
-| `backlog` | Egress / Ingress ratio | < 0.90 | < 0.50 | `OutgoingMessages / IncomingMessages` (window total) |
+| `backlog` | Egress / Ingress ratio | < 0.90 | < 0.50 | Per-hub `OutgoingMessages / IncomingMessages` (window total). **Normalized by consumer-group count** (`per_group_ratio = ratio / groups`). Egress cannot be split per consumer group, so `consumer_lag` is authoritative for per-group delay. |
 | `partition_skew` | Retained-event imbalance | ≥ 2.0× | ≥ 5.0× | `max / mean` retained events per partition |
 | `connections` | Connection saturation | ≥ 80% | ≥ 95% | `ActiveConnections(max) / --max-connections` |
 | `consumer_lag` | Worst-partition lag | ≥ `--lag-warn` | ≥ `--lag-crit` | `last_enqueued_seq − checkpoint_seq` |
@@ -184,6 +187,8 @@ lag = last_enqueued_sequence_number (data plane)
 
 `{fqdn}/{eventhub}/{consumer_group}/checkpoint/{partition_id}`  *(lower-cased by the SDK)*
 
+The tool scans the checkpoint store and automatically finds **every (event hub × consumer group)** pair present under this path, computing lag for each. Use `--consumer-group` to filter to a specific group.
+
 > [!TIP]
 > It also catches **dead/idle consumer** situations where the metric disappears.
 
@@ -216,9 +221,10 @@ lag = last_enqueued_sequence_number (data plane)
     {
       "category": "throttling",
       "severity": "critical",
-      "title": "Requests throttled (capacity pressure)",
-      "detail": "ThrottledRequests (total)=1500 over window. Enable Auto-Inflate or increase throughput capacity.",
+      "title": "Requests throttled (capacity pressure) — orders",
+      "detail": "[orders] ThrottledRequests (total)=1500 over window. Enable Auto-Inflate or increase throughput capacity.",
       "evidence": {
+        "event_hub": "orders",
         "metric": "ThrottledRequests",
         "value": 1500,
         "warn": 1,
